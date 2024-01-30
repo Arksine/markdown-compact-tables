@@ -48,7 +48,9 @@ can be inserted by adding your own tags to the content.
 
 """
 from __future__ import annotations
-from markdown.extensions import Extension
+import re
+from xml.etree.ElementTree import Element
+from markdown.extensions import Extension, attr_list
 from markdown.blockprocessors import BlockProcessor
 from markdown.treeprocessors import Treeprocessor
 
@@ -57,7 +59,8 @@ from typing import TYPE_CHECKING, List, Optional
 if TYPE_CHECKING:
     from markdown import Markdown
     from markdown.blockparser import BlockParser
-    from xml.etree.ElementTree import Element
+
+TABLE_ATTR_RE = re.compile(r"\{(.+)\}(?: caption: (.+))?")
 
 class Compactor(Treeprocessor):
     """
@@ -67,17 +70,21 @@ class Compactor(Treeprocessor):
     the configuration.
     """
     def __init__(self, ins_brk: bool) -> None:
-        self.table_blocks: List[str] = []
+        self.table_blocks: List[List[str]] = []
         self.sep = "<br/>" if ins_brk else " "
         super(Compactor, self).__init__()
 
     def add_block(self, block: str) -> None:
         """Called by the block processor when a table block is detected"""
-        self.table_blocks.append(block)
+        self.table_blocks.append(block.split("\n"))
 
     def run(self, root: Element) -> Optional[Element]:
+        # Add table attributes first.  This will mutate each table
+        # and apply the attributes before we come back around to
+        # compact it.
+        self.add_table_attributes(root)
         for tbl_index, table in enumerate(root.iter("table")):
-            rows = self.table_blocks[tbl_index].split("\n")
+            rows = self.table_blocks[tbl_index]
             if len(rows) < 4:
                 # The top two rows are the header. If we have a table
                 # with a single row there is nothing to do.
@@ -111,7 +118,60 @@ class Compactor(Treeprocessor):
             # Remove joined tr elements
             for tr in row_remove:
                 tbody.remove(tr)
+
         return None
+
+    def add_table_attributes(self, root: Element) -> None:
+        """
+        Iterates through all tables and applies attributes specified
+        in the last row.
+        """
+        for tbl_index, table in enumerate(root.iter("table")):
+            rows = self.table_blocks[tbl_index]
+            if len(rows) < 4:
+                # The top two rows are the header. If we have a table
+                # with a single row there is nothing to do.
+                continue
+            tbody = table.find("tbody")
+            if tbody is None:
+                continue
+            attr_match = TABLE_ATTR_RE.match(rows[-1])
+            caption: Optional[str] = None
+            if attr_match is not None:
+                attrs = attr_match.group(1)
+                caption = attr_match.group(2)
+                rows.pop()
+                tbody.remove(tbody[-1])
+                if attrs:
+                    self.assign_attrs(table, attrs)
+                # Insert Caption If Found
+                if caption is not None:
+                    captag = Element("caption")
+                    captag.text = caption.strip()
+                    table.insert(0, captag)
+
+    def assign_attrs(self, elem: Element, attrs: str) -> None:
+        """ Assign `attrs` to element. Code from attr_list extension."""
+        for k, v in attr_list.get_attrs(attrs):
+            if k == '.':
+                # add to class
+                cls = elem.get('class')
+                if cls:
+                    elem.set('class', '{} {}'.format(cls, v))
+                else:
+                    elem.set('class', v)
+            else:
+                # assign attribute `k` with `v`
+                elem.set(self.sanitize_name(k), v)
+
+    def sanitize_name(self, name: str) -> str:
+        """
+        Sanitize name as 'an XML Name, minus the ":"'.
+        See https://www.w3.org/TR/REC-xml-names/#NT-NCName
+
+        Code from attr_list extension.
+        """
+        return attr_list.AttrListTreeprocessor.NAME_RE.sub('_', name)
 
 class TableBlockRetreiver(BlockProcessor):
     """
