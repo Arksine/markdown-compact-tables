@@ -49,18 +49,19 @@ can be inserted by adding your own tags to the content.
 """
 from __future__ import annotations
 import re
-from xml.etree.ElementTree import Element
+from xml.etree.ElementTree import Element, SubElement
 from markdown.extensions import Extension, attr_list
 from markdown.blockprocessors import BlockProcessor
 from markdown.treeprocessors import Treeprocessor
 
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Optional, Tuple, Dict
 
 if TYPE_CHECKING:
     from markdown import Markdown
     from markdown.blockparser import BlockParser
 
-TABLE_ATTR_RE = re.compile(r"\{(.+)\}(?: caption: (.+))?")
+TABLE_ATTR_RE = re.compile(r"a?\{:?(.+)\}(?:\s*(.+))?")
+ITEM_ID_RE = re.compile(r"(?:id=)|#([^ |]+)")
 
 class Compactor(Treeprocessor):
     """
@@ -83,6 +84,7 @@ class Compactor(Treeprocessor):
         # and apply the attributes before we come back around to
         # compact it.
         self.add_table_attributes(root)
+        items_to_move: Dict[str, Tuple[Element, Element, Element]] = {}
         for tbl_index, table in enumerate(root.iter("table")):
             rows = self.table_blocks[tbl_index]
             if len(rows) < 4:
@@ -102,7 +104,29 @@ class Compactor(Treeprocessor):
                     # the previous tr element
                     prev_tr = tr
                     continue
-                if orig_row.strip().endswith("|^"):
+                if orig_row.strip().endswith("|+"):
+                    # the first element must contain the id we are looking for
+                    item_match = ITEM_ID_RE.search(orig_row)
+                    if item_match is None:
+                        raise Exception("No valid id attribute specified")
+                    item_id = item_match.group(1).strip("\"'")
+                    if not item_id:
+                        raise Exception("No valid id attribute specified")
+                    if item_id in items_to_move:
+                        raise Exception(f"Item id {item_id} already moved")
+                    col_count = len(tr)
+                    tr.clear()
+                    tr.set("compact-container", "")
+                    item_parent = root.find(f".//*[@id='{item_id}']/..")
+                    if item_parent is None:
+                        raise Exception(
+                            f"Unable to find parent of an element matching id {item_id}"
+                        )
+                    item = item_parent.find(f"./*[@id='{item_id}']")
+                    assert item is not None
+                    td = SubElement(tr, "td", {"colspan": f"{col_count}"})
+                    items_to_move[item_id] = (item_parent, td, item)
+                elif orig_row.strip().endswith("|^"):
                     # join current tds with previous tds
                     for prev_td, cur_td in zip(prev_tr, tr):
                         if not cur_td.text:
@@ -118,6 +142,12 @@ class Compactor(Treeprocessor):
             # Remove joined tr elements
             for tr in row_remove:
                 tbody.remove(tr)
+
+        # Move items into td elements.  This is done after iteration as its
+        # possible to embed one table into another
+        for (parent_el, td, item) in items_to_move.values():
+            parent_el.remove(item)
+            td.append(item)
 
         return None
 
@@ -135,7 +165,7 @@ class Compactor(Treeprocessor):
             tbody = table.find("tbody")
             if tbody is None:
                 continue
-            attr_match = TABLE_ATTR_RE.match(rows[-1])
+            attr_match = TABLE_ATTR_RE.match(rows[-1].strip())
             caption: Optional[str] = None
             if attr_match is not None:
                 attrs = attr_match.group(1)
@@ -147,7 +177,7 @@ class Compactor(Treeprocessor):
                 # Insert Caption If Found
                 if caption is not None:
                     captag = Element("caption")
-                    captag.text = caption.strip()
+                    captag.text = caption.strip().replace("\\|", "|")
                     table.insert(0, captag)
 
     def assign_attrs(self, elem: Element, attrs: str) -> None:
