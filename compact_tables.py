@@ -216,12 +216,14 @@ class TableBlockRetreiver(BlockProcessor):
         md_parser: BlockParser
     ) -> None:
         self.compactor = compactor
-        self.orig_table_procesor = md_parser.blockprocessors['table']
-        super(TableBlockRetreiver, self).__init__(md_parser)
+        super().__init__(md_parser)
 
     def test(self, parent: Element, block: str):
         """Use the table procesor to test if this block is a valid table"""
-        return self.orig_table_procesor.test(parent, block)
+        if "table" not in self.parser.blockprocessors:
+            return False
+        tbl_parser = self.parser.blockprocessors["table"]
+        return tbl_parser.test(parent, block)
 
     def run(self, parent: Element, blocks: List[str]):
         """Add the block to the compactor"""
@@ -238,13 +240,12 @@ class CompactTableExtension(Extension):
         super().__init__(**kwargs)
     def extendMarkdown(self, md: Markdown) -> None:
         ins_brk = self.getConfig("auto_insert_break", True)
-        if 'table' in md.parser.blockprocessors:
-            compactor = Compactor(ins_brk)
-            md.parser.blockprocessors.register(
-                TableBlockRetreiver(compactor, md.parser),
-                "compact_tables", 80
-            )
-            md.treeprocessors.register(compactor, "compact_tables", 30)
+        compactor = Compactor(ins_brk)
+        md.parser.blockprocessors.register(
+            TableBlockRetreiver(compactor, md.parser),
+            "compact_tables", 80
+        )
+        md.treeprocessors.register(compactor, "compact_tables", 30)
 
 def makeExtension(*args, **kwargs):
     return CompactTableExtension(*args, **kwargs)
